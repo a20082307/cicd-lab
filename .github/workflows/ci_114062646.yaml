@@ -1,0 +1,101 @@
+name: CI 114062646
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  quality-check:
+    name: Typecheck, format, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Prettier check
+        run: npx prettier --check ".prettierrc" "src/**/*.ts" "test/**/*.ts" "vitest.config.ts" ".github/workflows/ci_114062646.yaml"
+
+      - name: Test with JUnit report
+        run: |
+          mkdir -p reports
+          npm test -- --reporter=default --reporter=junit --outputFile.junit=reports/vitest-junit.xml
+
+      - name: Show test result summary
+        if: always()
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const reportPath = 'reports/vitest-junit.xml';
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+
+          if (!summaryPath) {
+            console.log('GITHUB_STEP_SUMMARY is not available.');
+            process.exit(0);
+          }
+
+          if (!fs.existsSync(reportPath)) {
+            fs.appendFileSync(
+              summaryPath,
+              [
+                '## Test Result',
+                '',
+                'JUnit report was not generated. The test step may have failed before Vitest wrote the report.',
+                ''
+              ].join('\n')
+            );
+            process.exit(0);
+          }
+
+          const xml = fs.readFileSync(reportPath, 'utf8');
+          const suiteMatch = xml.match(/<testsuites\b[^>]*>/) || xml.match(/<testsuite\b[^>]*>/);
+          const suiteTag = suiteMatch ? suiteMatch[0] : '';
+          const getAttr = (name) => {
+            const match = suiteTag.match(new RegExp(`${name}="([^"]*)"`));
+            return match ? match[1] : '0';
+          };
+
+          const tests = Number(getAttr('tests'));
+          const failures = Number(getAttr('failures'));
+          const errors = Number(getAttr('errors'));
+          const skipped = Number(getAttr('skipped'));
+          const passed = Math.max(tests - failures - errors - skipped, 0);
+          const status = failures || errors ? 'Failed' : 'Passed';
+
+          fs.appendFileSync(
+            summaryPath,
+            [
+              '## Test Result',
+              '',
+              `| Status | Total | Passed | Failed | Errors | Skipped |`,
+              `| --- | ---: | ---: | ---: | ---: | ---: |`,
+              `| ${status} | ${tests} | ${passed} | ${failures} | ${errors} | ${skipped} |`,
+              ''
+            ].join('\n')
+          );
+          NODE
+
+      - name: Upload JUnit test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-junit-report
+          path: reports/vitest-junit.xml
+          if-no-files-found: warn
